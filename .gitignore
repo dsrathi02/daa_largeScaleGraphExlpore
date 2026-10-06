@@ -1,0 +1,13 @@
+# Build binaries
+main.exe
+*.exe
+*.o
+*.obj
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE files
+.vscode/
+.idea/
