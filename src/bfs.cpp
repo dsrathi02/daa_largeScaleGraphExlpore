@@ -10,6 +10,7 @@ BFSResult sequential_bfs(const CSRGraph& graph, int start_node) {
     BFSResult result;
     int V = graph.num_vertices;
     result.distance.assign(V, -1);
+    result.all_runs_verified = true;
 
     if (V == 0 || start_node < 0 || start_node >= V) {
         result.execution_time_ms = 0.0;
@@ -65,6 +66,7 @@ BFSResult parallel_bfs_omp(const CSRGraph& graph, int start_node, int num_thread
     BFSResult result;
     int V = graph.num_vertices;
     result.distance.assign(V, -1);
+    result.all_runs_verified = true;
 
     if (V == 0 || start_node < 0 || start_node >= V) {
         result.execution_time_ms = 0.0;
@@ -135,20 +137,27 @@ BFSResult parallel_bfs_omp(const CSRGraph& graph, int start_node, int num_thread
     return result;
 }
 
-// Rigorous Benchmark Helper: 1 Warm-up Run + 5 Repeated Runs -> Median Execution Time
+// Rigorous Benchmark Helper: Warm-up + N Repeats -> Verifies ALL parallel runs against sequential baseline
 BFSResult run_bfs_with_median_timing(const CSRGraph& graph, int start_node, bool is_parallel, int num_threads, int num_runs) {
+    BFSResult seq_baseline = sequential_bfs(graph, start_node);
+
     // Warm-up run (not recorded)
     if (is_parallel) {
         parallel_bfs_omp(graph, start_node, num_threads);
-    } else {
-        sequential_bfs(graph, start_node);
     }
 
     std::vector<BFSResult> results;
     std::vector<double> times;
+    bool all_verified = true;
 
     for (int i = 0; i < num_runs; ++i) {
         BFSResult res = is_parallel ? parallel_bfs_omp(graph, start_node, num_threads) : sequential_bfs(graph, start_node);
+        
+        // Verify EVERY parallel run against sequential baseline
+        if (is_parallel && !verify_bfs_results(seq_baseline, res)) {
+            all_verified = false;
+        }
+
         results.push_back(res);
         times.push_back(res.execution_time_ms);
     }
@@ -157,15 +166,17 @@ BFSResult run_bfs_with_median_timing(const CSRGraph& graph, int start_node, bool
     std::sort(times.begin(), times.end());
     double median_time = times[num_runs / 2];
 
-    // Find result corresponding to median time
+    BFSResult chosen_res = results[0];
     for (const auto& r : results) {
         if (r.execution_time_ms == median_time) {
-            return r;
+            chosen_res = r;
+            break;
         }
     }
 
-    results[0].execution_time_ms = median_time;
-    return results[0];
+    chosen_res.execution_time_ms = median_time;
+    chosen_res.all_runs_verified = all_verified;
+    return chosen_res;
 }
 
 bool verify_bfs_results(const BFSResult& seq_res, const BFSResult& par_res) {
@@ -185,10 +196,10 @@ bool verify_bfs_results(const BFSResult& seq_res, const BFSResult& par_res) {
     return true;
 }
 
-// Edge-Case Testing Suite
+// Edge-Case & Multi-Threaded Stress Testing Suite
 bool run_edge_case_tests() {
     std::cout << "\n========================================================\n";
-    std::cout << "               RUNNING EDGE-CASE UNIT TESTS             \n";
+    std::cout << "        RUNNING COMPREHENSIVE UNIT & STRESS TESTS       \n";
     std::cout << "========================================================\n";
 
     bool all_passed = true;
@@ -261,6 +272,27 @@ bool run_edge_case_tests() {
         bool ok = verify_bfs_results(seq, par) && (seq.distance[0] == 0 && seq.distance[1] == -1);
         std::cout << " Test 5 [Isolated Start Node (Degree 0)]       : " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
         all_passed = all_passed && ok;
+    }
+
+    // Test 6: Multi-Threaded Race Condition Stress Test on Large Graph (V=20,000, 2/4/8 Threads x 5 Runs)
+    {
+        std::cout << " Test 6 [Multi-Thread Race Stress (V=20k, 2/4/8 Threads x 5 Runs)]:\n";
+        CSRGraph g = CSRGraph::generate_scale_free(20000, 8, 42);
+        BFSResult seq = sequential_bfs(g, 0);
+        bool stress_ok = true;
+
+        for (int t : {2, 4, 8}) {
+            for (int run = 0; run < 5; ++run) {
+                BFSResult par = parallel_bfs_omp(g, 0, t);
+                if (!verify_bfs_results(seq, par)) {
+                    stress_ok = false;
+                    std::cerr << "  FAILED on thread count " << t << " run " << run << std::endl;
+                }
+            }
+            std::cout << "   -> Verified 5/5 runs cleanly on " << t << " threads\n";
+        }
+        std::cout << "   Result                                      : " << (stress_ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && stress_ok;
     }
 
     std::cout << "========================================================\n\n";

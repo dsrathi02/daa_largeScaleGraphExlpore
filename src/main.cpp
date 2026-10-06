@@ -15,7 +15,7 @@ void print_usage(const char* prog_name) {
               << "  -threads <num_threads>    Number of OpenMP threads (default: max cores)\n"
               << "  -seed <seed_val>          Random seed (default: 42)\n"
               << "  -runs <num_repeats>       Number of repeated runs for median timing (default: 5)\n"
-              << "  -test                     Run edge-case unit test suite\n"
+              << "  -test                     Run edge-case and multi-thread stress unit tests\n"
               << "  -csv                      Output single CSV line format for benchmarking\n";
 }
 
@@ -58,6 +58,13 @@ int main(int argc, char* argv[]) {
         return passed ? 0 : 1;
     }
 
+    // Input validation guard against invalid parameters (-threads 0, -runs 0, negative values)
+    if (V <= 0 || avg_degree <= 0 || num_threads <= 0 || num_runs <= 0) {
+        std::cerr << "Error: Invalid parameter value. -v, -d, -threads, and -runs must be positive integers (> 0).\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+
     // 1. Generate Graph ONCE using fixed seed
     CSRGraph graph;
     if (graph_type == "erdos") {
@@ -66,14 +73,14 @@ int main(int argc, char* argv[]) {
         graph = CSRGraph::generate_scale_free(V, avg_degree / 2, seed);
     }
 
-    // Exact theoretical CSR memory footprint calculation (bytes)
+    // Exact theoretical CSR memory footprint calculation (binary megabytes: MiB = 1024^2 bytes)
     size_t csr_bytes = (graph.offsets.size() * sizeof(long long)) + (graph.edges.size() * sizeof(int));
-    double csr_mem_mb = csr_bytes / (1024.0 * 1024.0);
+    double csr_mem_mib = csr_bytes / (1024.0 * 1024.0);
 
     // Exact theoretical Adjacency List memory footprint (std::vector<std::vector<int>>)
     // Header per vertex = 24 bytes (vector header) + destination edges = 4 bytes per edge
     size_t adj_list_bytes = (graph.num_vertices * sizeof(std::vector<int>)) + (graph.num_edges * sizeof(int));
-    double adj_list_mem_mb = adj_list_bytes / (1024.0 * 1024.0);
+    double adj_list_mem_mib = adj_list_bytes / (1024.0 * 1024.0);
     double exact_mem_savings_pct = (1.0 - (static_cast<double>(csr_bytes) / static_cast<double>(adj_list_bytes))) * 100.0;
 
     // Choose start vertex with degree > 0
@@ -85,14 +92,14 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // 2. Run Sequential BFS (1 Warm-up + 5 repeats -> Median Execution Time)
+    // 2. Run Sequential BFS (1 Warm-up + N repeats -> Median Execution Time)
     BFSResult seq_res = run_bfs_with_median_timing(graph, start_node, false, 1, num_runs);
 
-    // 3. Run OpenMP Parallel BFS (1 Warm-up + 5 repeats -> Median Execution Time)
+    // 3. Run OpenMP Parallel BFS (1 Warm-up + N repeats -> Verifies ALL runs against sequential baseline)
     BFSResult par_res = run_bfs_with_median_timing(graph, start_node, true, num_threads, num_runs);
 
-    // 4. Verify Correctness
-    bool is_correct = verify_bfs_results(seq_res, par_res);
+    // 4. Verify Correctness across ALL runs
+    bool is_correct = par_res.all_runs_verified;
 
     // Calculate metrics
     double speedup = (par_res.execution_time_ms > 0) ? (seq_res.execution_time_ms / par_res.execution_time_ms) : 1.0;
@@ -100,12 +107,12 @@ int main(int argc, char* argv[]) {
 
     if (csv_mode) {
         // Output CSV format:
-        // GraphType,Vertices,Edges,CSRMemMB,AdjListMemMB,MemSavingsPct,Threads,SeqTimeMS,ParTimeMS,Speedup,Efficiency,SeqMTEPS,ParMTEPS,Verified
+        // GraphType,Vertices,Edges,CSRMemMiB,AdjListMemMiB,MemSavingsPct,Threads,SeqTimeMS,ParTimeMS,Speedup,Efficiency,SeqMTEPS,ParMTEPS,Verified
         std::cout << graph_type << ","
                   << V << ","
                   << graph.num_edges << ","
-                  << std::fixed << std::setprecision(2) << csr_mem_mb << ","
-                  << adj_list_mem_mb << ","
+                  << std::fixed << std::setprecision(2) << csr_mem_mib << ","
+                  << adj_list_mem_mib << ","
                   << exact_mem_savings_pct << ","
                   << num_threads << ","
                   << std::setprecision(4) << seq_res.execution_time_ms << ","
@@ -122,8 +129,8 @@ int main(int argc, char* argv[]) {
         std::cout << " Graph Type         : " << graph_type << "\n";
         std::cout << " Vertices (V)       : " << V << "\n";
         std::cout << " Edges (E)          : " << graph.num_edges << "\n";
-        std::cout << " CSR Memory         : " << std::fixed << std::setprecision(2) << csr_mem_mb << " MB\n";
-        std::cout << " AdjList Memory     : " << adj_list_mem_mb << " MB\n";
+        std::cout << " CSR Memory         : " << std::fixed << std::setprecision(2) << csr_mem_mib << " MiB\n";
+        std::cout << " AdjList Memory     : " << adj_list_mem_mib << " MiB\n";
         std::cout << " CSR Memory Savings : " << std::setprecision(1) << exact_mem_savings_pct << "% reduction\n";
         std::cout << " Start Vertex       : " << start_node << "\n";
         std::cout << " OpenMP Threads     : " << num_threads << "\n";
@@ -133,7 +140,7 @@ int main(int argc, char* argv[]) {
         std::cout << " Parallel Time      : " << par_res.execution_time_ms << " ms (" << par_res.mteps << " MTEPS)\n";
         std::cout << " Speedup            : " << std::setprecision(2) << speedup << "x\n";
         std::cout << " Parallel Efficiency: " << std::setprecision(2) << (efficiency * 100.0) << "%\n";
-        std::cout << " Correctness Check  : " << (is_correct ? "[PASSED] (Outputs match element-wise!)" : "[FAILED]") << "\n";
+        std::cout << " Correctness Check  : " << (is_correct ? "[PASSED] (100% of parallel runs matched sequential output!)" : "[FAILED]") << "\n";
         std::cout << "========================================================\n";
     }
 

@@ -14,7 +14,7 @@ This project delivers an HPC computational framework for exploring large-scale g
 1. Employs **Compressed Sparse Row (CSR)** memory storage to eliminate pointer overhead and maximize spatial L1/L2 cache locality.
 2. Implements **Level-Synchronous Parallel BFS** utilizing **OpenMP** shared-memory multi-threading, dynamic chunk load balancing (`#pragma omp for schedule(dynamic, 512)`), thread-local frontier buffering, and atomic Compare-And-Swap (CAS) state claims.
 3. Incorporates a rigorous benchmark methodology (1 un-timed warm-up run + 5 repeated executions taking the **median** time) across Erdős-Rényi (Uniform) and Barabási-Albert (Scale-Free) graphs up to **1,000,000 vertices**.
-4. Achieves **100% verified correctness** across single-threaded and multi-threaded runs, supported by an edge-case unit testing suite.
+4. **Every benchmark run is checked element-wise against the sequential result**, supported by an edge-case and 2/4/8-thread race condition stress unit testing suite.
 
 ---
 
@@ -26,32 +26,32 @@ CSR packs the graph into two contiguous physical 1D arrays:
 - `edges` (Size $|E|$): Stores destination vertex IDs contiguously in memory.
 
 ### 2.2 Mathematical Proof of Memory Efficiency
-Let $V$ be the number of vertices and $E$ be the number of directed edges.
+Let $V$ be the number of vertices and $E$ be the number of directed edges. Binary megabytes ($\text{MiB} = 1024^2\text{ bytes}$) are used consistently across calculations and program logging.
 
 * **CSR Memory Footprint ($M_{\text{CSR}}$):**
-  $$M_{\text{CSR}} = (V + 1) \times 8\text{ bytes (long long offsets)} + E \times 4\text{ bytes (int edges)}$$
+  $$M_{\text{CSR}} = \frac{(V + 1) \times 8\text{ bytes (offsets)} + E \times 4\text{ bytes (edges)}}{1024 \times 1024}\text{ MiB}$$
 
 * **Standard Adjacency List Footprint ($M_{\text{AdjList}}$):**
   A standard `std::vector<std::vector<int>>` allocates a vector header per vertex (24 bytes on 64-bit platforms / 12 bytes on 32-bit platforms) plus element storage:
-  $$M_{\text{AdjList}} = V \times 24\text{ bytes (vector header)} + E \times 4\text{ bytes (int elements)}$$
+  $$M_{\text{AdjList}} = \frac{V \times 24\text{ bytes (vector header)} + E \times 4\text{ bytes (int elements)}}{1024 \times 1024}\text{ MiB}$$
 
 * **Exact Memory Reduction:**
   $$\text{Memory Savings (\%)} = \left( 1 - \frac{M_{\text{CSR}}}{M_{\text{AdjList}}} \right) \times 100\%$$
 
-  For a graph with $V = 100,000$ and $E = 1,600,000$:
-  - $M_{\text{AdjList}} = 100,000 \times 24 + 1,600,000 \times 4 = 2,400,000 + 6,400,000 = 8.80\text{ MB}$
-  - $M_{\text{CSR}} = 100,001 \times 8 + 1,600,000 \times 4 = 800,008 + 6,400,000 = 7.20\text{ MB}$
+  For a graph with $V = 100,000$ and $E = 1,599,928$:
+  - $M_{\text{CSR}} = \frac{100,001 \times 8 + 1,599,928 \times 4}{1048576} = 6.87\text{ MiB}$
+  - $M_{\text{AdjList}} = \frac{100,000 \times 24 + 1,599,928 \times 4}{1048576} = 8.39\text{ MiB}$
   - **Exact Memory Reduction:** $\approx 18.2\%$ reduction in raw bytes, with **zero heap fragmentation**.
 
 ---
 
-## 3. Parallel Algorithm Design & "Why OpenMP"
+## 3. Parallel Algorithm Design & Model Justification: Why OpenMP (vs MPI & CUDA)?
 
 ### 3.1 Why OpenMP?
-OpenMP was selected as the parallel multi-threading model for the following engineering reasons:
-1. **Direct Shared-Memory Access:** Graph exploration requires concurrent access to global graph structure arrays (`offsets`, `edges`) and the global level array (`distance`). OpenMP enables zero-copy shared-memory access across all CPU threads.
-2. **Compiler-Level Pragmas:** Eliminates manually managing OS thread lifecycles, mutex locks, or low-level pthreads boilerplate.
-3. **Dynamic Load Balancing (`schedule(dynamic, 512)`):** Real-world scale-free graphs contain hub vertices with high degrees alongside thousands of low-degree vertices. Static scheduling causes severe thread starvation. OpenMP's dynamic loop chunk scheduling distributes frontier vertex blocks dynamically to idle threads.
+1. **Shared-Memory Access:** Graph exploration requires concurrent access to global graph topology arrays (`offsets`, `edges`) and vertex state arrays (`distance`). OpenMP enables zero-copy shared-memory access across all CPU threads.
+2. **Why Not MPI?** MPI is engineered for distributed-memory clusters and requires explicit graph partition management and high network latency per BFS level. On a single multi-core node, shared-memory OpenMP eliminates message passing overhead and partition load imbalance.
+3. **Why Not CUDA (GPU)?** CUDA excels at regular fine-grained dense arithmetic, but irregular graph traversals suffer from severe GPU warp thread divergence, uncoalesced global memory access, and host-to-device PCI-e transfer bottlenecks.
+4. **Dynamic Load Balancing (`schedule(dynamic, 512)`):** Real-world scale-free graphs contain hub vertices with high degrees alongside thousands of low-degree vertices. Static scheduling causes severe thread starvation. OpenMP's dynamic loop chunk scheduling distributes frontier vertex blocks dynamically to idle threads.
 
 ### 3.2 Level-Synchronous BFS Architecture
 1. **Frontier Loop:** At level $k$, active vertices in `frontier` are expanded concurrently across worker threads:
@@ -98,11 +98,14 @@ g++ -O3 -fopenmp src/main.cpp src/bfs.cpp -o main
 
 ### Execution Commands
 ```powershell
-# Run Edge-Case Unit Test Suite
+# Run Edge-Case & Multi-Threaded Stress Test Suite
 .\main.exe -test
 
 # Single Execution CLI (100k Vertices, 4 OpenMP Threads, Median of 5 Runs)
 .\main.exe -type scale_free -v 100000 -d 16 -threads 4 -runs 5
+
+# Test Input Guard (-threads 0 returns error and exits cleanly)
+.\main.exe -threads 0
 
 # Automated Rigorous Benchmark Suite
 python scripts/benchmark.py
@@ -110,15 +113,16 @@ python scripts/benchmark.py
 
 ---
 
-## 6. Edge-Case Unit Testing Suite
+## 6. Edge-Case & Stress Unit Testing Suite
 
-The framework includes an edge-case testing suite (`.\main.exe -test`):
+The framework includes an edge-case and race condition testing suite (`.\main.exe -test`):
 
 1. **Test 1 [Single Vertex Graph ($V=1, E=0$)]**: Verified distance `dist[0] = 0`. `[PASSED]`
 2. **Test 2 [Disconnected Graph]**: Verified unreachable components remain `dist[u] = -1`. `[PASSED]`
 3. **Test 3 [Linear Chain Graph ($V=100$, Max Diameter $D=99$)]**: Verified max level `dist[99] = 99`. `[PASSED]`
 4. **Test 4 [Dense Clique Graph ($V=50$, $E=2450$)]**: Verified all neighbors reachable at level 1. `[PASSED]`
 5. **Test 5 [Isolated Start Node (Degree 0)]**: Verified traversal handles zero outgoing edges cleanly. `[PASSED]`
+6. **Test 6 [Multi-Thread Race Stress (V=20k, 2/4/8 Threads x 5 Runs)]**: Verified 100% of 15 multi-threaded runs match sequential baseline output element-wise. `[PASSED]`
 
 ---
 
@@ -126,4 +130,4 @@ The framework includes an edge-case testing suite (`.\main.exe -test`):
 
 - **Dhanashree Rathi (Lead Architecture & CSR Implementation):** Designed Compressed Sparse Row (CSR) graph storage, mathematical memory proof, and synthetic graph generators (Erdős-Rényi and Barabási-Albert Scale-Free).
 - **Parallel Optimization & Benchmarking Team:** Implemented OpenMP Level-Synchronous Parallel BFS, atomic CAS state claim, dynamic chunk scheduling, automated 5-repeat median benchmark suite, and Python performance plotting scripts.
-- **Verification & Documentation Team:** Engineered edge-case unit testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.
+- **Verification & Documentation Team:** Engineered edge-case and multi-threaded stress testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.

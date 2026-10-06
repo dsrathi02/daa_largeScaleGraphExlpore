@@ -13,15 +13,15 @@ This project delivers a high-performance C++ & Python computational framework:
 2. Features **Erdős-Rényi (Uniform)** and **Scale-Free / Power-Law (Barabási-Albert)** synthetic graph generators up to **1,000,000 vertices**.
 3. Implements **Level-Synchronous Parallel BFS** using **OpenMP**, dynamic chunk load balancing (`#pragma omp for schedule(dynamic, 512)`), thread-local frontier buffering, and atomic Compare-And-Swap (CAS) state claims.
 4. Uses a rigorous benchmark methodology (1 un-timed warm-up run + 5 repeated executions taking the **median** time) measuring Traversed Edges Per Second (**MTEPS**), Speedup ($S$), Parallel Efficiency ($E$), and scaling.
-5. Guarantees **100% verified correctness** across single and multi-threaded executions, supported by an edge-case unit testing suite.
+5. **Every benchmark run is checked element-wise against the sequential result**, supported by an edge-case and 2/4/8-thread race condition stress unit testing suite.
 
 ---
 
-## 2. Why OpenMP?
+## 2. Model Justification: Why OpenMP (vs MPI & CUDA)?
 
-OpenMP was selected as the parallel model for the following primary reasons:
 - **Shared-Memory Architecture:** Graph exploration algorithms require concurrent access to global graph topology arrays (`offsets`, `edges`) and vertex state arrays (`distance`). OpenMP provides lightweight multi-threading on shared memory without IPC overhead.
-- **Compiler Pragma Expressiveness:** `#pragma omp parallel` and `#pragma omp for` allow expressing loop-level parallelism cleanly without manually managing OS thread lifecycles or mutex locks.
+- **Why Not MPI?** MPI is engineered for distributed-memory clusters and requires explicit graph partition management and high network latency per BFS level. On a single multi-core node, shared-memory OpenMP eliminates message passing overhead and partition load imbalance.
+- **Why Not CUDA (GPU)?** CUDA excels at regular fine-grained dense arithmetic, but irregular graph traversals suffer from severe GPU warp thread divergence, uncoalesced global memory access, and host-to-device PCI-e transfer bottlenecks.
 - **Dynamic Load Balancing (`schedule(dynamic, 512)`):** Real-world power-law graphs exhibit extreme degree skew (hub vertices have thousands of edges while minor vertices have 2 edges). OpenMP's dynamic loop scheduler distributes vertex blocks dynamically to idle threads, eliminating thread starvation.
 
 ---
@@ -29,18 +29,18 @@ OpenMP was selected as the parallel model for the following primary reasons:
 ## 3. Mathematical Proofs & Theoretical Foundations
 
 ### 3.1 Memory Efficiency of CSR vs Standard Adjacency List
-Let $V$ be the number of vertices and $E$ be the number of directed edges.
+Let $V$ be the number of vertices and $E$ be the number of directed edges. Binary megabytes ($\text{MiB} = 1024^2\text{ bytes}$) are used consistently across calculations and program logging.
 
 - **CSR Memory Footprint ($M_{\text{CSR}}$):**
-  $$M_{\text{CSR}} = (V + 1) \times 8\text{ bytes (offsets)} + E \times 4\text{ bytes (edges)}$$
+  $$M_{\text{CSR}} = \frac{(V + 1) \times 8\text{ bytes (offsets)} + E \times 4\text{ bytes (edges)}}{1024 \times 1024}\text{ MiB}$$
 
 - **Standard Adjacency List Footprint ($M_{\text{AdjList}}$):**
-  $$M_{\text{AdjList}} = V \times 24\text{ bytes (std::vector headers)} + E \times 4\text{ bytes (elements)}$$
+  $$M_{\text{AdjList}} = \frac{V \times 24\text{ bytes (std::vector headers)} + E \times 4\text{ bytes (elements)}}{1024 \times 1024}\text{ MiB}$$
 
 - **Exact Memory Savings Formula:**
   $$\text{Memory Reduction (\%)} = \left( 1 - \frac{M_{\text{CSR}}}{M_{\text{AdjList}}} \right) \times 100\%$$
 
-  For $V = 100,000$ and $E = 1,600,000$, CSR uses $7.20\text{ MB}$ vs Adjacency List's $8.80\text{ MB}$, yielding an **18.2% raw byte reduction** and **zero heap fragmentation**.
+  For $V = 100,000$ and $E = 1,599,928$, CSR uses **6.87 MiB** vs Adjacency List's **8.39 MiB**, yielding an **18.2% raw byte reduction** and **zero heap fragmentation**.
 
 ### 3.2 Single-Ownership Invariant (Race Condition Prevention)
 When multiple worker threads attempt to visit unvisited neighbor vertex $v$ concurrently:
@@ -59,7 +59,7 @@ $$\text{CAS}(\&\text{distance}[v], -1, \text{level} + 1)$$
 daa_prj/
 ├── src/
 │   ├── graph.hpp               # CSR Data structure & Erdos-Renyi / Scale-Free graph generators
-│   ├── bfs.hpp                 # BFS Result struct, sequential & OpenMP parallel BFS, edge-case tests
+│   ├── bfs.hpp                 # BFS Result struct, sequential & OpenMP parallel BFS, stress tests
 │   ├── bfs.cpp                 # OpenMP Level-Synchronous BFS, atomic CAS claim, median timing runner
 │   └── main.cpp                # CLI entry point, edge-case test runner, and CSV output driver
 ├── scripts/
@@ -95,13 +95,16 @@ g++ -O3 -fopenmp src/main.cpp src/bfs.cpp -o main
 
 ### Execution Commands
 ```powershell
-# 1. Run Edge-Case Unit Test Suite
+# 1. Run Unit & 2/4/8-Thread Race Condition Stress Test Suite
 .\main.exe -test
 
 # 2. Run Single Execution CLI (100k Vertices, 4 Threads, Median of 5 Runs)
 .\main.exe -type scale_free -v 100000 -d 16 -threads 4 -runs 5
 
-# 3. Run Automated Benchmark Suite
+# 3. Test Parameter Guard against invalid inputs (returns error and exits)
+.\main.exe -threads 0
+
+# 4. Run Automated Benchmark Suite
 python scripts/benchmark.py
 ```
 
@@ -130,4 +133,4 @@ python scripts/benchmark.py
 
 - **Dhanashree Rathi (Lead Architecture & CSR Implementation):** Designed Compressed Sparse Row (CSR) graph storage, mathematical memory proof, and synthetic graph generators (Erdős-Rényi and Barabási-Albert Scale-Free).
 - **Parallel Optimization & Benchmarking Team:** Implemented OpenMP Level-Synchronous Parallel BFS, atomic CAS state claim, dynamic chunk scheduling, automated 5-repeat median benchmark suite, and Python performance plotting scripts.
-- **Verification & Documentation Team:** Engineered edge-case unit testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.
+- **Verification & Documentation Team:** Engineered edge-case and multi-threaded stress testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.
