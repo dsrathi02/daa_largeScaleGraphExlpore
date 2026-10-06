@@ -3,6 +3,7 @@ main.exe
 *.exe
 *.o
 *.obj
+libpthread.a
 
 # Python cache
 __pycache__/

@@ -4,12 +4,19 @@
 #include <iostream>
 #include <algorithm>
 #include <vector>
-#include <windows.h>
+#include <omp.h>
 
 BFSResult sequential_bfs(const CSRGraph& graph, int start_node) {
     BFSResult result;
     int V = graph.num_vertices;
     result.distance.assign(V, -1);
+
+    if (V == 0 || start_node < 0 || start_node >= V) {
+        result.execution_time_ms = 0.0;
+        result.traversed_edges = 0;
+        result.mteps = 0.0;
+        return result;
+    }
 
     std::queue<int> q;
 
@@ -49,68 +56,22 @@ BFSResult sequential_bfs(const CSRGraph& graph, int start_node) {
     return result;
 }
 
-// Worker context for level-synchronous parallel BFS
-struct BFSWorkerContext {
-    int thread_id;
-    const CSRGraph* graph;
-    const std::vector<int>* frontier;
-    std::vector<int>* distance;
-    int current_level;
-    volatile LONG* work_counter;
-    int chunk_size;
-
-    std::vector<int> local_frontier;
-    long long local_traversed_edges;
-};
-
-DWORD WINAPI BFSWorkerThread(LPVOID lpParam) {
-    BFSWorkerContext* ctx = static_cast<BFSWorkerContext*>(lpParam);
-    ctx->local_frontier.clear();
-    ctx->local_traversed_edges = 0;
-
-    size_t frontier_size = ctx->frontier->size();
-
-    while (true) {
-        // Atomic dynamic work assignment
-        LONG start_idx = InterlockedExchangeAdd(ctx->work_counter, ctx->chunk_size);
-        if (start_idx >= static_cast<LONG>(frontier_size)) {
-            break; // No more work in current level
-        }
-
-        LONG end_idx = (std::min)(start_idx + ctx->chunk_size, static_cast<LONG>(frontier_size));
-
-        for (LONG i = start_idx; i < end_idx; ++i) {
-            int u = (*ctx->frontier)[i];
-            long long graph_start = ctx->graph->offsets[u];
-            long long graph_end = ctx->graph->offsets[u + 1];
-            ctx->local_traversed_edges += (graph_end - graph_start);
-
-            for (long long j = graph_start; j < graph_end; ++j) {
-                int v = ctx->graph->edges[j];
-
-                // Atomic CAS check to claim unvisited vertex v
-                if ((*ctx->distance)[v] == -1) {
-                    if (InterlockedCompareExchange((volatile LONG*)&((*ctx->distance)[v]), ctx->current_level + 1, -1) == -1) {
-                        ctx->local_frontier.push_back(v);
-                    }
-                }
-            }
-        }
-    }
-
-    return 0;
-}
-
-BFSResult parallel_bfs(const CSRGraph& graph, int start_node, int num_threads) {
-    if (num_threads <= 0) {
-        SYSTEM_INFO sysinfo;
-        GetSystemInfo(&sysinfo);
-        num_threads = sysinfo.dwNumberOfProcessors;
+// OpenMP Level-Synchronous Parallel BFS
+BFSResult parallel_bfs_omp(const CSRGraph& graph, int start_node, int num_threads) {
+    if (num_threads > 0) {
+        omp_set_num_threads(num_threads);
     }
 
     BFSResult result;
     int V = graph.num_vertices;
     result.distance.assign(V, -1);
+
+    if (V == 0 || start_node < 0 || start_node >= V) {
+        result.execution_time_ms = 0.0;
+        result.traversed_edges = 0;
+        result.mteps = 0.0;
+        return result;
+    }
 
     std::vector<int> frontier;
     std::vector<int> next_frontier;
@@ -123,44 +84,42 @@ BFSResult parallel_bfs(const CSRGraph& graph, int start_node, int num_threads) {
     long long total_traversed_edges = 0;
     int current_level = 0;
 
-    // Single-thread fast path optimization
-    if (num_threads == 1) {
-        return sequential_bfs(graph, start_node);
-    }
-
-    std::vector<HANDLE> handles(num_threads);
-    std::vector<BFSWorkerContext> contexts(num_threads);
-
     while (!frontier.empty()) {
         next_frontier.clear();
-        volatile LONG work_counter = 0;
-        int chunk_size = 512; // Dynamic load balancing chunk size
+        long long level_edges = 0;
 
-        for (int t = 0; t < num_threads; ++t) {
-            contexts[t].thread_id = t;
-            contexts[t].graph = &graph;
-            contexts[t].frontier = &frontier;
-            contexts[t].distance = &result.distance;
-            contexts[t].current_level = current_level;
-            contexts[t].work_counter = &work_counter;
-            contexts[t].chunk_size = chunk_size;
+        #pragma omp parallel
+        {
+            std::vector<int> thread_local_frontier;
 
-            handles[t] = CreateThread(NULL, 0, BFSWorkerThread, &contexts[t], 0, NULL);
+            #pragma omp for schedule(dynamic, 512) reduction(+:level_edges)
+            for (size_t i = 0; i < frontier.size(); ++i) {
+                int u = frontier[i];
+                long long start_idx = graph.offsets[u];
+                long long end_idx = graph.offsets[u + 1];
+                level_edges += (end_idx - start_idx);
+
+                for (long long j = start_idx; j < end_idx; ++j) {
+                    int v = graph.edges[j];
+                    if (result.distance[v] == -1) {
+                        // Atomic CAS claim to guarantee single ownership per vertex v
+                        if (__sync_bool_compare_and_swap(&result.distance[v], -1, current_level + 1)) {
+                            thread_local_frontier.push_back(v);
+                        }
+                    }
+                }
+            }
+
+            // Merge thread-local frontier into global next_frontier safely
+            if (!thread_local_frontier.empty()) {
+                #pragma omp critical
+                {
+                    next_frontier.insert(next_frontier.end(), thread_local_frontier.begin(), thread_local_frontier.end());
+                }
+            }
         }
 
-        // Wait for all worker threads to complete level traversal
-        WaitForMultipleObjects(num_threads, handles.data(), TRUE, INFINITE);
-
-        // Close thread handles & combine local frontiers
-        for (int t = 0; t < num_threads; ++t) {
-            CloseHandle(handles[t]);
-            total_traversed_edges += contexts[t].local_traversed_edges;
-
-            next_frontier.insert(next_frontier.end(), 
-                                 contexts[t].local_frontier.begin(), 
-                                 contexts[t].local_frontier.end());
-        }
-
+        total_traversed_edges += level_edges;
         frontier.swap(next_frontier);
         current_level++;
     }
@@ -174,6 +133,39 @@ BFSResult parallel_bfs(const CSRGraph& graph, int start_node, int num_threads) {
     result.mteps = (seconds > 0) ? (total_traversed_edges / 1e6) / seconds : 0.0;
 
     return result;
+}
+
+// Rigorous Benchmark Helper: 1 Warm-up Run + 5 Repeated Runs -> Median Execution Time
+BFSResult run_bfs_with_median_timing(const CSRGraph& graph, int start_node, bool is_parallel, int num_threads, int num_runs) {
+    // Warm-up run (not recorded)
+    if (is_parallel) {
+        parallel_bfs_omp(graph, start_node, num_threads);
+    } else {
+        sequential_bfs(graph, start_node);
+    }
+
+    std::vector<BFSResult> results;
+    std::vector<double> times;
+
+    for (int i = 0; i < num_runs; ++i) {
+        BFSResult res = is_parallel ? parallel_bfs_omp(graph, start_node, num_threads) : sequential_bfs(graph, start_node);
+        results.push_back(res);
+        times.push_back(res.execution_time_ms);
+    }
+
+    // Sort to pick median
+    std::sort(times.begin(), times.end());
+    double median_time = times[num_runs / 2];
+
+    // Find result corresponding to median time
+    for (const auto& r : results) {
+        if (r.execution_time_ms == median_time) {
+            return r;
+        }
+    }
+
+    results[0].execution_time_ms = median_time;
+    return results[0];
 }
 
 bool verify_bfs_results(const BFSResult& seq_res, const BFSResult& par_res) {
@@ -191,4 +183,86 @@ bool verify_bfs_results(const BFSResult& seq_res, const BFSResult& par_res) {
         }
     }
     return true;
+}
+
+// Edge-Case Testing Suite
+bool run_edge_case_tests() {
+    std::cout << "\n========================================================\n";
+    std::cout << "               RUNNING EDGE-CASE UNIT TESTS             \n";
+    std::cout << "========================================================\n";
+
+    bool all_passed = true;
+
+    // Test 1: Single Vertex Graph (V=1, E=0)
+    {
+        std::vector<std::vector<int>> adj(1);
+        CSRGraph g(1, adj);
+        BFSResult seq = sequential_bfs(g, 0);
+        BFSResult par = parallel_bfs_omp(g, 0, 4);
+        bool ok = verify_bfs_results(seq, par) && seq.distance[0] == 0;
+        std::cout << " Test 1 [Single Vertex (V=1, E=0)]            : " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && ok;
+    }
+
+    // Test 2: Disconnected Graph (V=6, two disconnected triangles {0,1,2} and {3,4,5})
+    {
+        std::vector<std::vector<int>> adj(6);
+        adj[0] = {1, 2}; adj[1] = {0, 2}; adj[2] = {0, 1};
+        adj[3] = {4, 5}; adj[4] = {3, 5}; adj[5] = {3, 4};
+        CSRGraph g(6, adj);
+        BFSResult seq = sequential_bfs(g, 0);
+        BFSResult par = parallel_bfs_omp(g, 0, 4);
+        bool ok = verify_bfs_results(seq, par) && (seq.distance[3] == -1); // Component {3,4,5} unreachable
+        std::cout << " Test 2 [Disconnected Graph (Unreachable Nodes)]: " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && ok;
+    }
+
+    // Test 3: Linear Chain Graph (V=100, path 0-1-2-...-99)
+    {
+        int V = 100;
+        std::vector<std::vector<int>> adj(V);
+        for (int i = 0; i < V - 1; ++i) {
+            adj[i].push_back(i + 1);
+            adj[i + 1].push_back(i);
+        }
+        CSRGraph g(V, adj);
+        BFSResult seq = sequential_bfs(g, 0);
+        BFSResult par = parallel_bfs_omp(g, 0, 4);
+        bool ok = verify_bfs_results(seq, par) && (seq.distance[99] == 99);
+        std::cout << " Test 3 [Linear Chain Graph (Max Diameter D=99)]: " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && ok;
+    }
+
+    // Test 4: Fully Connected Clique Graph (V=50)
+    {
+        int V = 50;
+        std::vector<std::vector<int>> adj(V);
+        for (int i = 0; i < V; ++i) {
+            for (int j = 0; j < V; ++j) {
+                if (i != j) adj[i].push_back(j);
+            }
+        }
+        CSRGraph g(V, adj);
+        BFSResult seq = sequential_bfs(g, 0);
+        BFSResult par = parallel_bfs_omp(g, 0, 4);
+        bool ok = verify_bfs_results(seq, par) && (seq.distance[49] == 1);
+        std::cout << " Test 4 [Dense Clique Graph (Diameter D=1)]     : " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && ok;
+    }
+
+    // Test 5: Start Node with Zero Degree in mixed graph
+    {
+        int V = 5;
+        std::vector<std::vector<int>> adj(V);
+        adj[1] = {2}; adj[2] = {1}; // Node 0 has 0 degree
+        CSRGraph g(V, adj);
+        BFSResult seq = sequential_bfs(g, 0);
+        BFSResult par = parallel_bfs_omp(g, 0, 4);
+        bool ok = verify_bfs_results(seq, par) && (seq.distance[0] == 0 && seq.distance[1] == -1);
+        std::cout << " Test 5 [Isolated Start Node (Degree 0)]       : " << (ok ? "[PASSED]" : "[FAILED]") << "\n";
+        all_passed = all_passed && ok;
+    }
+
+    std::cout << "========================================================\n\n";
+    return all_passed;
 }
