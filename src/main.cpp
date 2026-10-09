@@ -12,7 +12,7 @@ void print_usage(const char* prog_name) {
               << "  -type <erdos|scale_free>  Graph type (default: scale_free)\n"
               << "  -v <num_vertices>         Number of vertices (default: 100000, try 10 for small output)\n"
               << "  -d <avg_degree>           Average degree (default: 16)\n"
-              << "  -threads <num_threads>    Number of OpenMP threads (default: max cores)\n"
+              << "  -threads <num_threads>    Number of OpenMP threads (> 0 required. 1 = Sequential only)\n"
               << "  -seed <seed_val>          Random seed (default: 42)\n"
               << "  -runs <num_repeats>       Number of repeated runs for median timing (default: 5)\n"
               << "  -print                    Print full distance vectors for all vertices\n"
@@ -62,9 +62,16 @@ int main(int argc, char* argv[]) {
         return passed ? 0 : 1;
     }
 
-    // Input validation guard against invalid parameters
-    if (V <= 0 || avg_degree <= 0 || num_threads <= 0 || num_runs <= 0) {
-        std::cerr << "Error: Invalid parameter value. -v, -d, -threads, and -runs must be positive integers (> 0).\n";
+    // STRICT CHECK 1: If number of threads is 0 or negative, code MUST NOT run.
+    if (num_threads <= 0) {
+        std::cerr << "Error: Invalid thread count (" << num_threads << "). Number of threads (-threads) must be a positive integer (> 0). Code execution aborted.\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    // Input validation guard against invalid parameters (-v, -d, -runs)
+    if (V <= 0 || avg_degree <= 0 || num_runs <= 0) {
+        std::cerr << "Error: Invalid parameter value. -v, -d, and -runs must be positive integers (> 0).\n";
         print_usage(argv[0]);
         return 1;
     }
@@ -97,8 +104,14 @@ int main(int argc, char* argv[]) {
     // 2. Run Sequential BFS (1 Warm-up + N repeats -> Median Execution Time)
     BFSResult seq_res = run_bfs_with_median_timing(graph, start_node, false, 1, num_runs);
 
-    // 3. Run OpenMP Parallel BFS (1 Warm-up + N repeats -> Verifies ALL runs against sequential baseline)
-    BFSResult par_res = run_bfs_with_median_timing(graph, start_node, true, num_threads, num_runs);
+    // 3. STRICT CHECK 2: If num_threads == 1, ONLY Sequential BFS runs!
+    BFSResult par_res;
+    if (num_threads == 1) {
+        par_res = seq_res; // Single thread: Parallel BFS is bypassed, only Sequential BFS runs
+    } else {
+        // Run OpenMP Parallel BFS across num_threads (> 1)
+        par_res = run_bfs_with_median_timing(graph, start_node, true, num_threads, num_runs);
+    }
 
     // 4. STRICT CORRECTNESS GATE: Check if sequential and parallel outputs match 100% identically
     bool is_correct = par_res.all_runs_verified && verify_bfs_results(seq_res, par_res);
@@ -114,10 +127,15 @@ int main(int argc, char* argv[]) {
         std::cout << " AdjList Memory     : " << adj_list_mem_mib << " MiB\n";
         std::cout << " CSR Memory Savings : " << std::setprecision(1) << exact_mem_savings_pct << "% reduction\n";
         std::cout << " Start Vertex       : " << start_node << "\n";
-        std::cout << " OpenMP Threads     : " << num_threads << "\n";
+        std::cout << " Requested Threads  : " << num_threads << (num_threads == 1 ? " (Sequential BFS Only)" : "") << "\n";
         std::cout << " Benchmark Runs     : 1 Warm-up + " << num_runs << " Repeats (Median Time)\n";
         std::cout << "--------------------------------------------------------\n";
         
+        if (num_threads == 1) {
+            std::cout << " [MODE]: -threads 1 specified -> Running Sequential BFS ONLY.\n";
+            std::cout << "         Parallel BFS execution bypassed.\n";
+        }
+
         // Show BFS distance outputs for sequential and parallel
         int print_count = (V <= 20 || force_print) ? V : 10;
         std::cout << " Sequential BFS Distances (first " << print_count << " vertices):\n  [";
@@ -127,12 +145,14 @@ int main(int argc, char* argv[]) {
         if (V > print_count) std::cout << ", ...";
         std::cout << "]\n";
 
-        std::cout << " Parallel BFS Distances   (first " << print_count << " vertices):\n  [";
-        for (int i = 0; i < print_count; ++i) {
-            std::cout << par_res.distance[i] << (i + 1 < print_count ? ", " : "");
+        if (num_threads > 1) {
+            std::cout << " Parallel BFS Distances   (first " << print_count << " vertices):\n  [";
+            for (int i = 0; i < print_count; ++i) {
+                std::cout << par_res.distance[i] << (i + 1 < print_count ? ", " : "");
+            }
+            if (V > print_count) std::cout << ", ...";
+            std::cout << "]\n";
         }
-        if (V > print_count) std::cout << ", ...";
-        std::cout << "]\n";
         std::cout << "--------------------------------------------------------\n";
 
         // Correctness Gate Check
@@ -175,9 +195,13 @@ int main(int argc, char* argv[]) {
                   << "PASSED\n";
     } else {
         std::cout << " Sequential Time    : " << std::setprecision(3) << seq_res.execution_time_ms << " ms (" << seq_res.mteps << " MTEPS)\n";
-        std::cout << " Parallel Time      : " << par_res.execution_time_ms << " ms (" << par_res.mteps << " MTEPS)\n";
-        std::cout << " Speedup            : " << std::setprecision(2) << speedup << "x\n";
-        std::cout << " Parallel Efficiency: " << std::setprecision(2) << (efficiency * 100.0) << "%\n";
+        if (num_threads > 1) {
+            std::cout << " Parallel Time      : " << par_res.execution_time_ms << " ms (" << par_res.mteps << " MTEPS)\n";
+            std::cout << " Speedup            : " << std::setprecision(2) << speedup << "x\n";
+            std::cout << " Parallel Efficiency: " << std::setprecision(2) << (efficiency * 100.0) << "%\n";
+        } else {
+            std::cout << " Mode Note          : Sequential Execution Only (-threads 1)\n";
+        }
         std::cout << "========================================================\n";
     }
 
