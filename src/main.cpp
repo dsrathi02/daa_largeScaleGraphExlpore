@@ -10,11 +10,12 @@ void print_usage(const char* prog_name) {
     std::cout << "Usage: " << prog_name << " [options]\n"
               << "Options:\n"
               << "  -type <erdos|scale_free>  Graph type (default: scale_free)\n"
-              << "  -v <num_vertices>         Number of vertices (default: 100000)\n"
+              << "  -v <num_vertices>         Number of vertices (default: 100000, try 10 for small output)\n"
               << "  -d <avg_degree>           Average degree (default: 16)\n"
               << "  -threads <num_threads>    Number of OpenMP threads (default: max cores)\n"
               << "  -seed <seed_val>          Random seed (default: 42)\n"
               << "  -runs <num_repeats>       Number of repeated runs for median timing (default: 5)\n"
+              << "  -print                    Print full distance vectors for all vertices\n"
               << "  -test                     Run edge-case and multi-thread stress unit tests\n"
               << "  -csv                      Output single CSV line format for benchmarking\n";
 }
@@ -28,6 +29,7 @@ int main(int argc, char* argv[]) {
     int num_runs = 5;
     bool csv_mode = false;
     bool run_tests = false;
+    bool force_print = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -43,6 +45,8 @@ int main(int argc, char* argv[]) {
             seed = std::atoi(argv[++i]);
         } else if (arg == "-runs" && i + 1 < argc) {
             num_runs = std::atoi(argv[++i]);
+        } else if (arg == "-print") {
+            force_print = true;
         } else if (arg == "-test") {
             run_tests = true;
         } else if (arg == "-csv") {
@@ -58,7 +62,7 @@ int main(int argc, char* argv[]) {
         return passed ? 0 : 1;
     }
 
-    // Input validation guard against invalid parameters (-threads 0, -runs 0, negative values)
+    // Input validation guard against invalid parameters
     if (V <= 0 || avg_degree <= 0 || num_threads <= 0 || num_runs <= 0) {
         std::cerr << "Error: Invalid parameter value. -v, -d, -threads, and -runs must be positive integers (> 0).\n";
         print_usage(argv[0]);
@@ -73,12 +77,10 @@ int main(int argc, char* argv[]) {
         graph = CSRGraph::generate_scale_free(V, avg_degree / 2, seed);
     }
 
-    // Exact theoretical CSR memory footprint calculation (binary megabytes: MiB = 1024^2 bytes)
+    // Memory footprint calculations
     size_t csr_bytes = (graph.offsets.size() * sizeof(long long)) + (graph.edges.size() * sizeof(int));
     double csr_mem_mib = csr_bytes / (1024.0 * 1024.0);
 
-    // Exact theoretical Adjacency List memory footprint (std::vector<std::vector<int>>)
-    // Header per vertex = 24 bytes (vector header) + destination edges = 4 bytes per edge
     size_t adj_list_bytes = (graph.num_vertices * sizeof(std::vector<int>)) + (graph.num_edges * sizeof(int));
     double adj_list_mem_mib = adj_list_bytes / (1024.0 * 1024.0);
     double exact_mem_savings_pct = (1.0 - (static_cast<double>(csr_bytes) / static_cast<double>(adj_list_bytes))) * 100.0;
@@ -98,10 +100,59 @@ int main(int argc, char* argv[]) {
     // 3. Run OpenMP Parallel BFS (1 Warm-up + N repeats -> Verifies ALL runs against sequential baseline)
     BFSResult par_res = run_bfs_with_median_timing(graph, start_node, true, num_threads, num_runs);
 
-    // 4. Verify Correctness across ALL runs
-    bool is_correct = par_res.all_runs_verified;
+    // 4. STRICT CORRECTNESS GATE: Check if sequential and parallel outputs match 100% identically
+    bool is_correct = par_res.all_runs_verified && verify_bfs_results(seq_res, par_res);
 
-    // Calculate metrics
+    if (!csv_mode) {
+        std::cout << "========================================================\n";
+        std::cout << "        LARGE-SCALE GRAPH EXPLORATION (OpenMP BFS)      \n";
+        std::cout << "========================================================\n";
+        std::cout << " Graph Type         : " << graph_type << "\n";
+        std::cout << " Vertices (V)       : " << V << "\n";
+        std::cout << " Edges (E)          : " << graph.num_edges << "\n";
+        std::cout << " CSR Memory         : " << std::fixed << std::setprecision(2) << csr_mem_mib << " MiB\n";
+        std::cout << " AdjList Memory     : " << adj_list_mem_mib << " MiB\n";
+        std::cout << " CSR Memory Savings : " << std::setprecision(1) << exact_mem_savings_pct << "% reduction\n";
+        std::cout << " Start Vertex       : " << start_node << "\n";
+        std::cout << " OpenMP Threads     : " << num_threads << "\n";
+        std::cout << " Benchmark Runs     : 1 Warm-up + " << num_runs << " Repeats (Median Time)\n";
+        std::cout << "--------------------------------------------------------\n";
+        
+        // Show BFS distance outputs for sequential and parallel
+        int print_count = (V <= 20 || force_print) ? V : 10;
+        std::cout << " Sequential BFS Distances (first " << print_count << " vertices):\n  [";
+        for (int i = 0; i < print_count; ++i) {
+            std::cout << seq_res.distance[i] << (i + 1 < print_count ? ", " : "");
+        }
+        if (V > print_count) std::cout << ", ...";
+        std::cout << "]\n";
+
+        std::cout << " Parallel BFS Distances   (first " << print_count << " vertices):\n  [";
+        for (int i = 0; i < print_count; ++i) {
+            std::cout << par_res.distance[i] << (i + 1 < print_count ? ", " : "");
+        }
+        if (V > print_count) std::cout << ", ...";
+        std::cout << "]\n";
+        std::cout << "--------------------------------------------------------\n";
+
+        // Correctness Gate Check
+        if (!is_correct) {
+            std::cerr << " [CORRECTNESS CHECK]: [FAILED] Mismatch detected between Sequential and Parallel BFS!\n";
+            std::cerr << " Halting execution. Performance calculations aborted due to correctness failure.\n";
+            std::cout << "========================================================\n";
+            return 1;
+        }
+
+        std::cout << " [CORRECTNESS CHECK]: [PASSED] (Sequential & Parallel outputs match 100% identically!)\n";
+        std::cout << "--------------------------------------------------------\n";
+    }
+
+    // If correctness check failed, do NOT proceed with speedup calculation
+    if (!is_correct) {
+        return 1;
+    }
+
+    // 5. Calculate performance metrics ONLY AFTER correctness is verified
     double speedup = (par_res.execution_time_ms > 0) ? (seq_res.execution_time_ms / par_res.execution_time_ms) : 1.0;
     double efficiency = speedup / num_threads;
 
@@ -121,28 +172,14 @@ int main(int argc, char* argv[]) {
                   << efficiency << ","
                   << seq_res.mteps << ","
                   << par_res.mteps << ","
-                  << (is_correct ? "PASSED" : "FAILED") << "\n";
+                  << "PASSED\n";
     } else {
-        std::cout << "========================================================\n";
-        std::cout << "        LARGE-SCALE GRAPH EXPLORATION (OpenMP BFS)      \n";
-        std::cout << "========================================================\n";
-        std::cout << " Graph Type         : " << graph_type << "\n";
-        std::cout << " Vertices (V)       : " << V << "\n";
-        std::cout << " Edges (E)          : " << graph.num_edges << "\n";
-        std::cout << " CSR Memory         : " << std::fixed << std::setprecision(2) << csr_mem_mib << " MiB\n";
-        std::cout << " AdjList Memory     : " << adj_list_mem_mib << " MiB\n";
-        std::cout << " CSR Memory Savings : " << std::setprecision(1) << exact_mem_savings_pct << "% reduction\n";
-        std::cout << " Start Vertex       : " << start_node << "\n";
-        std::cout << " OpenMP Threads     : " << num_threads << "\n";
-        std::cout << " Benchmark Runs     : 1 Warm-up + " << num_runs << " Repeats (Median Time)\n";
-        std::cout << "--------------------------------------------------------\n";
         std::cout << " Sequential Time    : " << std::setprecision(3) << seq_res.execution_time_ms << " ms (" << seq_res.mteps << " MTEPS)\n";
         std::cout << " Parallel Time      : " << par_res.execution_time_ms << " ms (" << par_res.mteps << " MTEPS)\n";
         std::cout << " Speedup            : " << std::setprecision(2) << speedup << "x\n";
         std::cout << " Parallel Efficiency: " << std::setprecision(2) << (efficiency * 100.0) << "%\n";
-        std::cout << " Correctness Check  : " << (is_correct ? "[PASSED] (100% of parallel runs matched sequential output!)" : "[FAILED]") << "\n";
         std::cout << "========================================================\n";
     }
 
-    return is_correct ? 0 : 1;
+    return 0;
 }

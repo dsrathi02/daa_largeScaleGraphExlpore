@@ -13,7 +13,7 @@ This project delivers a high-performance C++ & Python computational framework:
 2. Features **Erdős-Rényi (Uniform)** and **Scale-Free / Power-Law (Barabási-Albert)** synthetic graph generators up to **1,000,000 vertices**.
 3. Implements **Level-Synchronous Parallel BFS** using **OpenMP**, dynamic chunk load balancing (`#pragma omp for schedule(dynamic, 512)`), thread-local frontier buffering, and atomic Compare-And-Swap (CAS) state claims.
 4. Uses a rigorous benchmark methodology (1 un-timed warm-up run + 5 repeated executions taking the **median** time) measuring Traversed Edges Per Second (**MTEPS**), Speedup ($S$), Parallel Efficiency ($E$), and scaling.
-5. **Every benchmark run is checked element-wise against the sequential result**, supported by an edge-case and 2/4/8-thread race condition stress unit testing suite.
+5. **Displays Sequential and Parallel BFS distance outputs side-by-side** and enforces a **Strict Correctness Gate**: performance calculations and speedup metrics are evaluated **ONLY AFTER** sequential and parallel distance vectors are verified to match 100% identically element-wise.
 
 ---
 
@@ -61,7 +61,7 @@ daa_prj/
 │   ├── graph.hpp               # CSR Data structure & Erdos-Renyi / Scale-Free graph generators
 │   ├── bfs.hpp                 # BFS Result struct, sequential & OpenMP parallel BFS, stress tests
 │   ├── bfs.cpp                 # OpenMP Level-Synchronous BFS, atomic CAS claim, median timing runner
-│   └── main.cpp                # CLI entry point, edge-case test runner, and CSV output driver
+│   └── main.cpp                # CLI entry point, BFS distance output printer, and correctness gate driver
 ├── scripts/
 │   └── benchmark.py            # Rigorous 5-repeat median benchmark driver and matplotlib plot generator
 ├── results/
@@ -95,16 +95,19 @@ g++ -O3 -fopenmp src/main.cpp src/bfs.cpp -o main
 
 ### Execution Commands
 ```powershell
-# 1. Run Unit & 2/4/8-Thread Race Condition Stress Test Suite
-.\main.exe -test
+# 1. Small Graph CLI Execution (V=10 to view full sequential & parallel BFS distance arrays)
+.\main.exe -v 10 -threads 4
 
-# 2. Run Single Execution CLI (100k Vertices, 4 Threads, Median of 5 Runs)
+# 2. Large Graph CLI Execution (100k Vertices, 4 Threads, Median of 5 Runs)
 .\main.exe -type scale_free -v 100000 -d 16 -threads 4 -runs 5
 
-# 3. Test Parameter Guard against invalid inputs (returns error and exits)
-.\main.exe -threads 0
+# 3. Print full distance array for any graph size (-print flag)
+.\main.exe -v 20 -print
 
-# 4. Run Automated Benchmark Suite
+# 4. Run Unit & 2/4/8-Thread Race Condition Stress Test Suite
+.\main.exe -test
+
+# 5. Run Automated Benchmark Suite
 python scripts/benchmark.py
 ```
 
