@@ -51,6 +51,7 @@
 
 ## 3. Individual Contribution Statement
 
-- **Dhanashree Rathi (Lead Architecture & CSR Implementation):** Designed Compressed Sparse Row (CSR) graph storage, mathematical memory proof, and synthetic graph generators (Erdős-Rényi and Barabási-Albert Scale-Free).
-- **Parallel Optimization & Benchmarking Team:** Implemented OpenMP Level-Synchronous Parallel BFS, atomic CAS state claim, dynamic chunk scheduling, automated 5-repeat median benchmark suite, and Python performance plotting scripts.
-- **Verification & Documentation Team:** Engineered edge-case unit testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.
+1. **Dhanashree Rathi — Architecture & Graph Representation:** Designed the overall architecture, implemented CSR graph storage, developed memory-efficiency calculations, and created synthetic graph generators (Erdős–Rényi and Barabási–Albert Scale-Free).
+2. **Siya Daga — Parallel BFS Implementation:** Implemented level-synchronous parallel BFS using OpenMP, atomic Compare-And-Swap (CAS), dynamic scheduling, and thread-local frontier buffers.
+3. **Vaidehi Sonawane — Benchmarking & Performance Analysis:** Developed the automated benchmarking workflow, implemented repeated-run median timing, collected performance metrics, and generated Python-based performance charts.
+4. **Surabhi Singh — Testing & Documentation:** Developed edge-case validation, verified sequential and parallel BFS results, and prepared the project report, LLM Usage Log, and viva Q&A guide.

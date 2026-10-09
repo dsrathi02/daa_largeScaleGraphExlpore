@@ -261,3 +261,12 @@ When multiple threads concurrently discover unvisited vertex $v$:
 ### Adding a New Graph Algorithm (e.g. Parallel Connected Components / Dijkstra)
 1. Declare function prototype in `src/bfs.hpp`.
 2. Implement using CSR topology in `src/bfs.cpp`. CSR contiguous slices enable high-performance parallel array traversals across all graph algorithms.
+
+---
+
+## 6. Individual Contribution Statement
+
+1. **Dhanashree Rathi — Architecture & Graph Representation:** Designed the overall architecture, implemented CSR graph storage, developed memory-efficiency calculations, and created synthetic graph generators (Erdős–Rényi and Barabási–Albert Scale-Free).
+2. **Siya Daga — Parallel BFS Implementation:** Implemented level-synchronous parallel BFS using OpenMP, atomic Compare-And-Swap (CAS), dynamic scheduling, and thread-local frontier buffers.
+3. **Vaidehi Sonawane — Benchmarking & Performance Analysis:** Developed the automated benchmarking workflow, implemented repeated-run median timing, collected performance metrics, and generated Python-based performance charts.
+4. **Surabhi Singh — Testing & Documentation:** Developed edge-case validation, verified sequential and parallel BFS results, and prepared the project report, LLM Usage Log, and viva Q&A guide.
