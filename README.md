@@ -71,43 +71,38 @@ daa_prj/
 │   └── chart_execution_time.png      # Sequential vs Parallel median execution time bar chart
 ├── README.md                   # System documentation and viva guide
 ├── PROJECT_REPORT.md           # Formal academic project report
-└── LLM_USAGE_LOG.md            # Mandatory LLM Prompt log with rubric table and case study
+├── LLM_USAGE_LOG.md            # Mandatory LLM Prompt log with rubric table and case study
+└── USER_DEVELOPER_MANUAL.md    # Comprehensive User & Developer Manual
 ```
 
 ---
 
-## 5. Build & Execution Instructions
+## 5. User & Developer Manual Quick Reference
 
-### Hardware & Environment Specifications
-- **CPU:** Multi-core x86_64 Processor (4 Logical Cores)
-- **Compiler:** `g++ (MinGW.org GCC-6.3.0-1) 6.3.0` with `-O3 -fopenmp`
-- **OS:** Windows 11 64-bit / Linux
+For complete User Manual and Developer Manual sections, refer to **[USER_DEVELOPER_MANUAL.md](file:///c:/Users/DELL/Documents/engg/daa/daa_prj/USER_DEVELOPER_MANUAL.md)**.
 
-### Windows Build Command (MinGW / MSVC)
+### Build Commands
+- **Windows (MinGW / MSVC):** `g++ -O3 -fopenmp -L. src/main.cpp src/bfs.cpp -o main.exe`
+- **Linux / macOS (GCC):** `g++ -O3 -fopenmp src/main.cpp src/bfs.cpp -o main`
+
+### Common Execution Commands
 ```powershell
-g++ -O3 -fopenmp -L. src/main.cpp src/bfs.cpp -o main.exe
-```
+# 1. Print all V vertex distance values (for small graph visualization)
+.\main.exe -v 25 -threads 4
 
-### Linux Build Command (GCC)
-```bash
-g++ -O3 -fopenmp src/main.cpp src/bfs.cpp -o main
-```
-
-### Execution Commands
-```powershell
-# 1. Small Graph CLI Execution (V=10 to view full sequential & parallel BFS distance arrays)
-.\main.exe -v 10 -threads 4
-
-# 2. Large Graph CLI Execution (100k Vertices, 4 Threads, Median of 5 Runs)
+# 2. Standard Execution (100k Vertices, 4 Threads, Median of 5 Runs)
 .\main.exe -type scale_free -v 100000 -d 16 -threads 4 -runs 5
 
-# 3. Print full distance array for any graph size (-print flag)
-.\main.exe -v 20 -print
+# 3. Parameter Guard Test (-threads 0 returns error and exits cleanly)
+.\main.exe -threads 0
 
-# 4. Run Unit & 2/4/8-Thread Race Condition Stress Test Suite
+# 4. Sequential-Only Mode (-threads 1 bypasses parallel BFS)
+.\main.exe -v 100000 -threads 1
+
+# 5. Run Unit & 2/4/8-Thread Race Condition Stress Test Suite
 .\main.exe -test
 
-# 5. Run Automated Benchmark Suite
+# 6. Run Automated Benchmark Suite
 python scripts/benchmark.py
 ```
 
@@ -136,4 +131,4 @@ python scripts/benchmark.py
 
 - **Dhanashree Rathi (Lead Architecture & CSR Implementation):** Designed Compressed Sparse Row (CSR) graph storage, mathematical memory proof, and synthetic graph generators (Erdős-Rényi and Barabási-Albert Scale-Free).
 - **Parallel Optimization & Benchmarking Team:** Implemented OpenMP Level-Synchronous Parallel BFS, atomic CAS state claim, dynamic chunk scheduling, automated 5-repeat median benchmark suite, and Python performance plotting scripts.
-- **Verification & Documentation Team:** Engineered edge-case and multi-threaded stress testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, and Viva Q&A guide.
+- **Verification & Documentation Team:** Engineered edge-case and multi-threaded stress testing suite (`test_edge_cases`), authored Project Report, LLM Usage Log, User & Developer Manual, and Viva Q&A guide.
